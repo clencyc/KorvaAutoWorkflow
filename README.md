@@ -1,72 +1,107 @@
-# Korva WhatsApp creator onboarding prototype
+# Korva creator onboarding prototype
 
-FastAPI/Twilio WhatsApp flow for a **single authenticated Korva account**. It
-does not ask for name or email; those remain on the main website. A configured
-JWT and an allowlisted WhatsApp sender authorize gateway requests. Do not put a
-JWT in chat, source control, or Twilio message content.
+FastAPI creator onboarding over Telegram and Twilio WhatsApp for a single
+authenticated Korva account. Names and email remain on the main website; both
+channels use server-configured Korva Gateway credentials and a single-user
+allowlist. Never put credentials in chat, source control, or user-facing
+messages.
 
 ## Configure and run
 
-Copy `.env.example` to `.env`, fill it locally with fresh credentials, then:
+Copy `.env.example` to `.env`, fill it locally, then start from the repository
+root:
 
 ```sh
 python -m pip install -r requirements.txt
 uvicorn main:app --reload --env-file .env --port 8000
 ```
 
-Expose port 8000 with ngrok and set the Twilio Sandbox **When a message comes
-in** URL and `TWILIO_WHATSAPP_WEBHOOK_URL` to the same public HTTPS URL ending
-in `/webhooks/twilio/whatsapp`.
+Configure either or both channels. Set the Telegram webhook to
+`https://<public-host>/webhooks/telegram`, using the same
+`TELEGRAM_WEBHOOK_SECRET` as Telegram's webhook `secret_token`. Start the bot
+from a private chat by sending `/start`; it cannot initiate a conversation.
+For WhatsApp, set the Twilio Sandbox callback and
+`TWILIO_WHATSAPP_WEBHOOK_URL` to the same public HTTPS URL ending in
+`/webhooks/twilio/whatsapp`.
+
+If Telegram appears not to respond, confirm the public HTTPS tunnel is running
+and the webhook URL is registered with Telegram. Check `getWebhookInfo` for the
+bot for its current URL and recent delivery errors. Uvicorn should log
+`Telegram webhook configured` on startup and `Received Telegram update_id=...`
+for each delivered update; no receipt log means Telegram has not reached this
+app.
+
+Telegram settings:
+
+- `TELEGRAM_BOT_TOKEN`: secret token from BotFather.
+- `TELEGRAM_WEBHOOK_SECRET`: secret Telegram sends in
+  `X-Telegram-Bot-Api-Secret-Token`.
+- `TELEGRAM_AUTHORIZED_USER_ID`: exactly one numeric Telegram user ID. The bot
+  refuses startup when Telegram is enabled if this is missing or contains
+  multiple values. Authorization uses `from.id`, never the mutable username or
+  phone number.
+
+WhatsApp settings include one `WHATSAPP_AUTHORIZED_SENDERS` E.164 number and
+the Twilio Auth Token(s) used to validate the exact public callback URL. The
+optional consent template also needs its configured SID and Twilio API
+credentials.
 
 `KORVA_GATEWAY_ACCESS_TOKEN` and optional `KORVA_GATEWAY_REFRESH_TOKEN` must
-belong to the already authenticated Korva account. For this single-user demo,
-`WHATSAPP_AUTHORIZED_SENDERS` must contain only the account owner's phone in
-E.164 form (for example `+2547...`). Without both a gateway token and sender
-allowlist, the bot rejects inbound users. The access JWT refreshes on a gateway
-401 when a refresh JWT is configured; it is held only in server memory after
-refresh. Use a dedicated backend account and rotate credentials that were
-previously pasted into chat.
+belong to the already authenticated Korva account. The gateway access token
+refreshes once on HTTP 401 when a refresh token is configured.
 
-## WhatsApp flow
+The optional INDIVIDUAL plan path uses the separate payments API.
+`KORVA_PAYMENT_BASE_URL` defaults to `https://payment.korvav.com`, and
+`KORVA_PAYMENT_ACCESS_TOKEN` must be a valid server-side Bearer token. Selecting
+INDIVIDUAL asks for the payer's phone in international E.164 format, then
+calls `POST /api/v1/payments/initiate` with the plan tier, phone number,
+account reference, and transaction description. The existing Premium
+SUBSCRIBE checkout remains unchanged. Revoke credentials shared in chat and
+replace them locally; never copy access tokens into source or logs.
 
-1. Require both a server-configured Korva JWT and an allowlisted WhatsApp
-   sender, then ask for explicit consent to process submitted social/profile
-   details.
-2. Ask for a TikTok handle and call the documented connect, public profile,
-   and earnings-snapshot routes. Public scraping does **not** prove account
-   ownership. If the creator says they completed account linking, call sync
-   and read the connected metrics endpoint.
-3. Ask for IP asset title, type, and description; create the asset through the
-   gateway, then accept a PDF/JPEG/PNG supporting document and upload it to
-   the documented asset document endpoint.
-4. Ask for **separate explicit consent** before accepting an M-Pesa SMS/PDF.
-   The provided gateway API reference has no M-Pesa statement import endpoint:
-   the prototype does not store or analyze the statement and does not generate
-   a Financial Health Score. It says so explicitly.
-5. Invite the creator to Premium. Only after they reply `UPGRADE`, fetch plan
-   information and create a checkout session. The payment URL is returned in
-   WhatsApp; no payment credentials are collected there.
+## Onboarding flow
 
-Reply `STOP` or `CANCEL` to clear the active in-memory session. Raw M-Pesa
-message text is not written to onboarding state or sent to the gateway.
+1. `/start` presents consent; the creator must explicitly choose YES.
+2. Collect a TikTok handle and call the public profile and earnings endpoints.
+   Public lookup does not prove ownership. The creator may indicate that they
+   completed linking to sync connected metrics, or skip that step.
+3. Collect an IP asset title, type, and description, then create it through the
+   CreditAI gateway endpoint.
+4. Offer optional PDF, JPEG, or PNG document upload. Telegram downloads are
+   restricted to approved MIME types and the configured size cap.
+5. Present the Premium offer (KES 850, subsidized to KES 765). SUBSCRIBE starts
+   the existing Premium checkout. When configured, the separate INDIVIDUAL
+   plan (KES 500) asks for a payer phone and starts payment only after it is
+   provided. Both return a Paystack authorization link.
 
-## Integrations and limits
-
-Required Twilio settings include the account Auth Token(s) for request
-signature validation, the exact webhook URL, and a configured Sandbox WhatsApp
-sender. Consent quick-reply templates are optional. Sending templates also
-requires the Twilio Account SID and API Key SID/Secret.
-
-The M-Pesa statement ingestion/analysis API is not present in
-`KORVA_GATEWAY.rest`; do not tell users import or scoring succeeded until that
-endpoint is implemented. The in-memory session store is only for local
-prototyping, not production. Use persistent encrypted session storage,
-expiring per-user authorization, deletion/retention controls, and a secure
-per-user website-to-WhatsApp account-linking flow before multi-user deployment.
+`/stop`, `/cancel`, `STOP`, and `CANCEL` clear the active in-memory session.
+M-Pesa statements are not collected or analyzed by this flow. The gateway's
+Premium price must match the amount displayed by the bot. Payment credentials
+and M-Pesa PINs are never collected in chat.
 
 ## Tests
+
+Run the full offline test suite:
 
 ```sh
 python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
+
+Run a single test:
+
+```sh
+PYTHONPATH=tests python -m unittest \
+  test_telegram.TelegramCreatorOnboardingTests.test_upload_offer_and_checkout_require_explicit_subscribe \
+  -v
+```
+
+Webhook tests use fake Telegram and gateway clients and locally generated
+Twilio signatures; they do not contact either provider.
+
+## Prototype limitations
+
+The session store is in memory and is intended only for local prototyping. A
+production deployment needs persistent encrypted sessions, expiring
+authorization, retention/deletion controls, and secure per-user account
+linking. The gateway contract has no M-Pesa statement import/analysis endpoint.
